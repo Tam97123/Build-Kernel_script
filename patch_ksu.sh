@@ -19,6 +19,9 @@ fi
 if [ ! -d "$KERNEL_DIR/KernelSU" ]; then
  echo "[+] Integrating KernelSU..."
  curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash >/dev/null 2>&1
+elif [ -f "$KERNEL_DIR/KernelSU/kernel/Kbuild" ]; then
+ sed -i 's|$(subst ",,$(CONFIG_KSU_FULL_NAME_FORMAT))|%TAG_NAME%-%COMMIT_SHA%-t.me/noforce2pay|' "$KERNEL_DIR/KernelSU/kernel/Kbuild"
+ sed -i '/-dirty/d' "$KERNEL_DIR/KernelSU/kernel/Kbuild"
 fi
 
 if [[ "$VERSION" -eq "4" || "$KERNEL_VERSION" == "5.4" ]]; then
@@ -31,7 +34,7 @@ if [[ "$VERSION" -eq "4" || "$KERNEL_VERSION" == "5.4" ]]; then
   patch -p1 < "$SUSFS_PATCH" || true
   rm -f "$SUSFS_PATCH"
 
-  echo "[+] Integrating KernelSU..."
+  echo "[+] Integrating inline hook..."
   KSU_PATCH="susfs_inline_hook_patches.sh"
   curl -LSsfO "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/${KSU_PATCH}"
   bash "$KSU_PATCH" >/dev/null 2>&1 && rm -f "$KSU_PATCH"
