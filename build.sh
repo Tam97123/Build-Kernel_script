@@ -20,7 +20,7 @@ KSU=y
 # ==============================================================================
 # SAMSUNG kernel?
 # ==============================================================================
-if [[ -d "security/defex" || -d "security/rkp" || -d "security/proca" || -d "security/five" || -d "security/samsung" ]]; then
+if [[ -d "security/defex" || -d "security/rkp" || -d "security/proca" || -d "security/five" || -d "security/samsung" || -d "drivers/samsung" ]]; then
  SAMSUNG_KERNEL=true
  info "Detected SAMSUNG kernel!"
  info "Please create an Issues if it's wrong!"
@@ -179,10 +179,11 @@ get_gcc(){
  fi
 }
 
-if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1; then
+if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1 || grep -qi "clang" README_Kernel.txt 2>/dev/null; then
  info "Detected AOSP kernel (Using LLVM/Clang)"
  if [ ! -d "$CLANG_DIR" ]; then
-  CLANG_NAME="$(grep -hoE 'clang-r?[0-9]+[a-z0-9]*' "$KERNEL_DIR"/build.config.* 2>/dev/null | sort | uniq -c | sort -nr | awk '{print $2}' | head -n 1 || true )"
+  CLANG_NAME="$(grep -oE 'clang-r?[0-9]+[a-z0-9]*' README_Kernel.txt 2>/dev/null | head -n 1 || true)"
+  [ -n "$CLANG_NAME" ] || CLANG_NAME="$(grep -hoE 'clang-r?[0-9]+[a-z0-9]*' "$KERNEL_DIR"/build.config.* 2>/dev/null | sort | uniq -c | sort -nr | awk '{print $2}' | head -n 1 || true)"
   if [ -n "$CLANG_NAME" ]; then
    info "Downloading ${CLANG_NAME}..."
    git clone --filter=blob:none --no-checkout https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 aosp_clang >/dev/null 2>&1
@@ -194,6 +195,10 @@ if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1; then
    mkdir -p "${CLANG_DIR%/*}"
    mv "$CLANG_NAME" "$CLANG_DIR"
    cd "$KERNEL_DIR" && rm -rf aosp_clang
+  elif [ "$KERNEL_VERSION" = "5.4" ]; then
+   info "Downloading LLVM toolchain 10.0.9..."
+   mkdir -p "$CLANG_DIR"
+   curl -LSs "https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/llvm-arm-toolchain-ship-10.0.9.tar.gz" | tar -xz -C "$CLANG_DIR" --strip-components=1
   else
    error "Can not detect clang!"
   fi
@@ -317,6 +322,7 @@ ZIP_NAME="Kernel_${KERNEL_VERSION}_$(date +%y%m%d).zip"
 if [ ! -d "$ANYKERNEL3_DIR" ]; then
  info "Downloading AnyKernel3..."
  git clone -q https://github.com/osm0sis/AnyKernel3 "$ANYKERNEL3_DIR" || error "Can not download AnyKernel3!"
+ sed -i 's/do.devicecheck=1/do.devicecheck=0/; s|^block=.*|block=auto;|; s|^is_slot_device=.*|is_slot_device=auto;|' "$ANYKERNEL3_DIR/anykernel.sh"
 fi
 
 info "Copying Kernel Image..."
