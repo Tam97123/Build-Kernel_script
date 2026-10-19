@@ -128,17 +128,15 @@ info "Using ${DEFCONFIG} as defconfig!"
 # ==============================================================================
 # 4. DETECT ARCHITECTURE
 # ==============================================================================
-if [[ "$DEFCONFIGS_PATHS" == *"arm64"* ]]; then
+if [[ "$DEFCONFIGS_PATHS" = *"arm64"* ]]; then
  export ARCH=arm64
  export CLANG_TRIPLE="aarch64-linux-gnu-"
- info "Kernel's architecture is 64-bits!"
 else
  export ARCH=arm
  export CLANG_TRIPLE="arm-linux-gnueabi-"
- info "Kernel's architecture is 32-bits!"
 fi
 
-if [[ "$SAMSUNG_KERNEL" == true && ! -f "${KERNEL_DIR}/arch/${ARCH}/configs/samsung-rkp.config" ]]; then
+if [[ "$SAMSUNG_KERNEL" = true && ! -f "${KERNEL_DIR}/arch/${ARCH}/configs/samsung-rkp.config" ]]; then
  cat <<EOF > "${KERNEL_DIR}/arch/${ARCH}/configs/samsung-rkp.config"
 CONFIG_UH=n
 CONFIG_UH_RKP=n
@@ -152,14 +150,14 @@ CONFIG_PROCA=n
 CONFIG_FIVE=n
 EOF
 fi
-[ "$SAMSUNG_KERNEL" == true ] && DEFCONFIG+=" samsung-rkp.config"
+[ "$SAMSUNG_KERNEL" = true ] && DEFCONFIG+=" samsung-rkp.config"
 
 # ==============================================================================
 # 5. BUILD OPTIONS
 # ==============================================================================
 BUILD_OPTIONS=(-C "${KERNEL_DIR}" -j"$(nproc)" ARCH="${ARCH}" )
 
-if [[ "$SAMSUNG_KERNEL" == true && "${DEFCONFIG,,}" == *"exynos"* ]]; then
+if [[ "$SAMSUNG_KERNEL" = true && "${DEFCONFIG,,}" = *"exynos"* ]]; then
  IMAGE_DIR="${KERNEL_DIR}/arch/${ARCH}/boot"
 else
  BUILD_OPTIONS+=( O="${KERNEL_DIR}/out" )
@@ -182,7 +180,7 @@ get_gcc(){
  fi
 }
 
-if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1 || [[ "$SAMSUNG_KERNEL" == true && grep -qi "clang" $SAMSUNG_README 2>/dev/null ]]; then
+if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1 || [[ "$SAMSUNG_KERNEL" = true && grep -qi "clang" $SAMSUNG_README 2>/dev/null ]]; then
  info "Detected AOSP kernel (Using LLVM/Clang)"
  if [ ! -d "$CLANG_DIR" ]; then
   CLANG_NAME="$(grep -oE 'clang-r?[0-9]+[a-z0-9]*' README_Kernel.txt 2>/dev/null | head -n 1 || true)"
@@ -232,7 +230,7 @@ if [ "${KSU,,}" = "y" ]; then
   curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash >/dev/null 2>&1
  fi
 
- if [[ "$VERSION" -eq 4 || "$KERNEL_VERSION" == "5.4" ]]; then
+ if [[ "$VERSION" -eq 4 || "$KERNEL_VERSION" = "5.4" ]]; then
   REJECT_DIR="$KERNEL_DIR/patch_rejects"
   
   if [ ! -f "$KERNEL_DIR/.ksu_patch" ]; then
