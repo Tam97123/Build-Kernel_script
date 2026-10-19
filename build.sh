@@ -5,6 +5,7 @@ info(){ echo -e "\n[INFO]: $*\n"; }
 error(){ echo -e "\n[ERROR]: $*\n" >&2; exit 1; }
 
 KERNEL_DIR="$(dirname "$(readlink -f "$0")")"
+cd $KERNEL_DIR
 VERSION=$(awk -F' = ' '/^VERSION/ {print $2}' Makefile)
 PATCHLEVEL=$(awk -F' = ' '/^PATCHLEVEL/ {print $2}' Makefile)
 KERNEL_VERSION="${VERSION}.${PATCHLEVEL}"
@@ -25,9 +26,9 @@ if [[ -d "security/defex" || -d "security/rkp" || -d "security/proca" || -d "sec
  SAMSUNG_KERNEL=true
  SAMSUNG_README=$(find "$KERNEL_DIR" "$KERNEL_DIR/.." -maxdepth 1 -type f -iname "README_Kernel.txt" -print -quit 2>/dev/null || true)
  info "Detected SAMSUNG kernel! Please create an Issue if it's wrong!"
- [ -z "$README_KERNEL" ] && error "Instruction from SAMSUNG not found! Please provide README_Kernel.txt in the kernel source or upper directory."
+ [ -z "$SAMSUNG_README" ] && error "Instruction from SAMSUNG not found! Please provide README_Kernel.txt in the kernel source or upper directory."
  if [ -z "$DEFCONFIG" ]; then
-  SAMSUNG_DEFCONFIG=$(grep -m 1 -oE '[a-zA-Z0-9_-]+_defconfig' README_Kernel.txt || true)
+  SAMSUNG_DEFCONFIG=$(grep -m 1 -oE '[a-zA-Z0-9_-]+_defconfig' "$SAMSUNG_README" || true)
   [ -n "$SAMSUNG_DEFCONFIG" ] && DEFCONFIG="$SAMSUNG_DEFCONFIG"
  fi
  [ -f "build_kernel.sh" ] && source <(grep -E "^export " build_kernel.sh || true)
@@ -114,12 +115,12 @@ check_defconfigs(){
  return 0
 }
 
-AVAILABLE_CONFIGS=$(get_available_configs)
-CONFIG_COUNT=$(echo "$AVAILABLE_CONFIGS" | grep -c . || true)
-
-[[ "$CONFIG_COUNT" -eq 1 && -z "$DEFCONFIG" ]] && DEFCONFIG="$AVAILABLE_CONFIGS"
+if [ -z "$DEFCONFIG" ]; then
+ AVAILABLE_CONFIGS=$(get_available_configs)
+ [ "$(echo "$AVAILABLE_CONFIGS" | grep -c . || true)" -eq 1 ] && DEFCONFIG="$AVAILABLE_CONFIGS"
+fi
 while [ -z "$DEFCONFIG" ] || ! check_defconfigs "$DEFCONFIG"; do
- read -p info "Enter defconfig (supports multiple, space-separated): " DEFCONFIG
+ read -p "[INFO] Enter defconfig (supports multiple, space-separated): " DEFCONFIG
 done
 DEFCONFIG="$DEFCONFIGS_NAMES"
 sed -i "s|^DEFCONFIG=.*|DEFCONFIG=\"$DEFCONFIG\"|" "${BASH_SOURCE[0]}"
@@ -180,10 +181,10 @@ get_gcc(){
  fi
 }
 
-if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1 || [[ "$SAMSUNG_KERNEL" = true && grep -qi "clang" $SAMSUNG_README 2>/dev/null ]]; then
+if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1 || grep -qi "clang" "${SAMSUNG_README:-}" 2>/dev/null; then
  info "Detected AOSP kernel (Using LLVM/Clang)"
  if [ ! -d "$CLANG_DIR" ]; then
-  CLANG_NAME="$(grep -oE 'clang-r?[0-9]+[a-z0-9]*' README_Kernel.txt 2>/dev/null | head -n 1 || true)"
+  CLANG_NAME="$(grep -oE 'clang-r?[0-9]+[a-z0-9]*' "${SAMSUNG_README:-}" 2>/dev/null | head -n 1 || true)"
   [ -n "$CLANG_NAME" ] || CLANG_NAME="$(grep -hoE 'clang-r?[0-9]+[a-z0-9]*' "$KERNEL_DIR"/build.config.* 2>/dev/null | sort | uniq -c | sort -nr | awk '{print $2}' | head -n 1 || true)"
   if [ -n "$CLANG_NAME" ]; then
    info "Downloading ${CLANG_NAME}..."
@@ -322,7 +323,7 @@ ZIP_NAME="Kernel_${KERNEL_VERSION}_$(date +%y%m%d).zip"
 
 if [ ! -d "$ANYKERNEL3_DIR" ]; then
  info "Downloading AnyKernel3..."
- git clone -q https://github.com/osm0sis/AnyKernel3 "$ANYKERNEL3_DIR" || error "Can not download AnyKernel3!"
+ git clone -q --depth=1 https://github.com/osm0sis/AnyKernel3 "$ANYKERNEL3_DIR" || error "Can not download AnyKernel3!"
  sed -i 's/do.devicecheck=1/do.devicecheck=0/; s|^block=.*|block=auto;|; s|^is_slot_device=.*|is_slot_device=auto;|' "$ANYKERNEL3_DIR/anykernel.sh"
 fi
 
@@ -334,4 +335,5 @@ find "${KERNEL_DIR}/out" -type f -name "*.img" -exec cp {} "$ANYKERNEL3_DIR/" \;
 
 cd "$ANYKERNEL3_DIR"
 zip -r9 "${KERNEL_DIR}/${ZIP_NAME}" . -x "*.git*" > /dev/null
+rm -rf $ANYKERNEL3_DIR
 info "AnyKernel3 created at ${KERNEL_DIR}/${ZIP_NAME}"
