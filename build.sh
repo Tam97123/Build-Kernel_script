@@ -1,283 +1,339 @@
 #!/bin/bash
 set -euo pipefail
 
-KERNEL_DIR=$(pwd)
-VERSION=$(grep -w '^VERSION' Makefile | tr -d ' ' | cut -d= -f2 || echo "")
-PATCHLEVEL=$(grep -w '^PATCHLEVEL' Makefile | tr -d ' ' | cut -d= -f2 || echo "")
+info(){ echo -e "\n[INFO]: $*\n"; }
+error(){ echo -e "\n[ERROR]: $*\n" >&2; exit 1; }
+
+KERNEL_DIR="$(dirname "$(readlink -f "$0")")"
+cd $KERNEL_DIR
+VERSION=$(awk -F' = ' '/^VERSION/ {print $2}' Makefile)
+PATCHLEVEL=$(awk -F' = ' '/^PATCHLEVEL/ {print $2}' Makefile)
 KERNEL_VERSION="${VERSION}.${PATCHLEVEL}"
-REPO_URL="https://raw.githubusercontent.com/Tam97123/Build-Kernel_scripts/refs/heads/main"
+
 TOOLCHAIN_DIR="$KERNEL_DIR/toolchain"
 CLANG_DIR="$TOOLCHAIN_DIR/clang"
 GCC_DIR="$TOOLCHAIN_DIR/gcc"
-DEFCONFIG_DIR=(
- "$KERNEL_DIR/arch/arm64/configs"
- "$KERNEL_DIR/arch/arm/configs"
-)
-# Hardcode this variable if you dont want prompt
+DEFCONFIG_DIR=("$KERNEL_DIR/arch/arm64/configs")
+[ "$VERSION" -lt 4 ] && DEFCONFIG_DIR+=("$KERNEL_DIR/arch/arm/configs")
+
 DEFCONFIG=
 KSU=
 
-get_script() {
- local script_name="$1"
- echo "[+] Downloading $script_name..."
- if ! curl -sLO "$REPO_URL/scripts/$script_name"; then
-  echo "[-] Error: Can not download $script_name!" >&2
-  exit 1
+# ==============================================================================
+# SAMSUNG kernel?
+# ==============================================================================
+if [[ -d "security/defex" || -d "security/rkp" || -d "security/proca" || -d "security/five" || -d "security/samsung" || -d "drivers/samsung" ]]; then
+ SAMSUNG_KERNEL=true
+ SAMSUNG_README=$(find "$KERNEL_DIR" "$KERNEL_DIR/.." -maxdepth 1 -type f -iname "README_Kernel.txt" -print -quit 2>/dev/null || true)
+ info "Detected SAMSUNG kernel! Please create an Issue if it's wrong!"
+ [ -z "$SAMSUNG_README" ] && error "Instruction from SAMSUNG not found! Please provide README_Kernel.txt in the kernel source or upper directory."
+ if [ -z "$DEFCONFIG" ]; then
+  SAMSUNG_DEFCONFIG=$(grep -m 1 -oE '[a-zA-Z0-9_-]+_defconfig' "$SAMSUNG_README" || true)
+  [ -n "$SAMSUNG_DEFCONFIG" ] && DEFCONFIG="$SAMSUNG_DEFCONFIG"
  fi
- source "$script_name"
- rm -f "$script_name"
-}
+ [ -f "build_kernel.sh" ] && source <(grep -E "^export " build_kernel.sh || true)
+else
+ SAMSUNG_KERNEL=false
+ info "Please create an Issue if this is SAMSUNG kernel!"
+fi
 
 # ==============================================================================
 # 1. CHECK KERNEL VERSION
 # ==============================================================================
-if [ -z "$VERSION" ] || [ -z "$PATCHLEVEL" ]; then
- echo "[-] Error: Can not detect kernel version!" >&2
- exit 1
-elif [[ ( "$VERSION" -eq "5" && "$PATCHLEVEL" -gt "4" ) || "$VERSION" -gt "5" ]]; then
- echo "[-] Not supporting GKI kernel ${KERNEL_VERSION}!"
- exit 1
+if [[ -z "$VERSION" || -z "$PATCHLEVEL" ]]; then
+ error "Can not detect kernel version!"
+elif [[ ( "$VERSION" -eq 5 && "$PATCHLEVEL" -gt 4 ) || "$VERSION" -gt 5 ]]; then
+ error "This script does not support GKI kernel ${KERNEL_VERSION}!"
 else
- echo "[+] Detected kernel ${KERNEL_VERSION}!"
+ info "Detected kernel ${KERNEL_VERSION}!"
 fi
 
 # ==============================================================================
 # 2. DEPENDENCIES & OS CHECK
 # ==============================================================================
-install_dependencies () {
- echo "[+] Detecting OS and installing dependencies..."
- if command -v apt &> /dev/null; then
-  echo "[+] Ubuntu/Debian-based system detected, using apt..."
-  sudo apt update > /dev/null 2>&1 && sudo apt install -y git device-tree-compiler lz4 xz-utils zlib1g-dev openjdk-17-jdk gcc g++ python3 python-is-python3 p7zip-full android-sdk-libsparse-utils erofs-utils \
-   default-jdk gnupg flex bison gperf build-essential zip curl ccache libc6-dev libncurses-dev libx11-dev libreadline-dev libgl1 libgl1-mesa-dev \
-   make sudo bc grep tofrodos python3-markdown libxml2-utils xsltproc libtinfo6 \
-   repo cpio kmod openssl libelf-dev pahole libssl-dev libarchive-tools zstd libyaml-dev --fix-missing > /dev/null 2>&1
-  wget -q https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb && sudo dpkg -i libtinfo5_6.3-2_amd64.deb > /dev/null 2>&1 && rm -f libtinfo5_6.3-2_amd64.deb
-  wget -q https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2_amd64.deb && sudo dpkg -i libncurses5_6.3-2_amd64.deb > /dev/null 2>&1 && rm -f libncurses5_6.3-2_amd64.deb
- elif command -v dnf &> /dev/null; then
-  echo "[+] Fedora/RHEL-based system detected, using dnf..."
-  sudo dnf group install -y "c-development" "development-tools" > /dev/null 2>&1
-  sudo dnf install -y dtc lz4 xz zlib-devel java-latest-openjdk-devel python3 \
-   p7zip p7zip-plugins android-tools erofs-utils \
-   ncurses-devel ccache libX11-devel readline-devel mesa-libGL-devel python3-markdown \
-   libxml2 libxslt dos2unix kmod openssl elfutils-libelf-devel dwarves \
-   openssl-devel libarchive zstd rsync libyaml-devel openssl-devel-engine --skip-unavailable > /dev/null 2>&1
- elif command -v pacman &> /dev/null; then
-  echo "[+] Arch-based system detected, using pacman..."
-  sudo pacman -Sy --needed --noconfirm base-devel > /dev/null 2>&1
-  sudo pacman -S --needed --noconfirm dtc lz4 xz zlib jdk-openjdk python \
-   p7zip android-tools erofs-utils \
-   ncurses ccache libx11 readline mesa python-markdown \
-   libxml2 libxslt dos2unix kmod openssl libelf pahole \
-   libarchive zstd rsync libyam > /dev/null 2>&1
+RPM_PKGS=(make gcc gcc-c++ bc bison flex pkgconf git curl ccache tar xz zip unzip cpio rsync kmod
+          perl python3 openssl openssl-devel openssl-devel-engine elfutils-libelf-devel dwarves
+          ncurses-devel zlib-devel libyaml-devel lz4 zstd dtc)
+DEB_PKGS=(build-essential bc bison flex pkg-config git curl ccache tar xz-utils zip unzip cpio rsync
+          kmod perl python3 python-is-python3 libssl-dev libelf-dev pahole libncurses-dev
+          zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler)
+
+install_deps(){
+ local missing=() available=() p
+ if command -v rpm &>/dev/null; then
+  for p in "${RPM_PKGS[@]}"; do
+   rpm -q --whatprovides "$p" &>/dev/null || missing+=("$p")
+  done
+  [ "${#missing[@]}" = 0 ] && return 0
+  info "Installing: ${missing[*]}"
+  sudo dnf install -y --skip-unavailable "${missing[@]}" || error "Install the kernel build dependencies failed"
+ elif command -v dpkg &>/dev/null; then
+  for p in "${DEB_PKGS[@]}"; do
+   [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ] || missing+=("$p")
+  done
+  [ "${#missing[@]}" = 0 ] && return 0
+  for p in "${missing[@]}"; do apt-cache show "$p" &>/dev/null && available+=("$p"); done
+  [ "${#available[@]}" = 0 ] && return 0
+  info "Installing: ${available[*]}"
+  sudo apt update && sudo apt install -y "${available[@]}" || error "Install the kernel build dependencies failed!"
  else
-  echo "[-] Error: Can not determine package manager, please install dependencies manually" >&2
-  exit 1
-  fi
-  touch .requirements
+  info "Unknown package manager -- install the kernel build dependencies yourself."
+ fi
 }
 
-if [ ! -f ".requirements" ]; then install_dependencies; fi
+install_deps
+[ -f .gitmodules ] && git submodule update --init --recursive
 
 # ==============================================================================
 # 3. CHECK DEFCONFIG
 # ==============================================================================
-check_defconfigs() {
+get_available_configs(){
+ find "${DEFCONFIG_DIR[@]}" -type f \( -name "*defconfig" -o -name "*.config" -o -name "*.fragment" \) -printf "%f\n" 2>/dev/null | sort -u
+}
+check_defconfigs(){
  local input_configs="$1"
- local check_defconfigs_name=
- local check_defconfigs_path=
-
+ local check_defconfigs_name=""
+ local check_defconfigs_path=""
+ 
  for config in $input_configs; do
   local config_path=$(find "${DEFCONFIG_DIR[@]}" -type f -name "$config" -print -quit 2>/dev/null)
+  
   if [ -n "$config_path" ]; then
    local rel_name="$config_path"
    for dir in "${DEFCONFIG_DIR[@]}"; do rel_name="${rel_name#$dir/}"; done
-   check_defconfigs_name="$check_defconfigs_name $rel_name"
-   check_defconfigs_path="$check_defconfigs_path $config_path"
+   check_defconfigs_name="${check_defconfigs_name} ${rel_name}"
+   check_defconfigs_path="${check_defconfigs_path} ${config_path}"
   else
-   echo "[-] Error: No such defconfig name '${config}'! Please try again with available one:" >&2
-   find "${DEFCONFIG_DIR[@]}" -maxdepth 1 -type f \( -name "*_defconfig" -o -name "*.config" \) 2>/dev/null | awk -F'/' '{print $NF}' | sort | column | sed 's/^/    /'
+   echo -e "\n[ERROR]: No such defconfig name '${config}'! Please try again with available one(s):" >&2
+   get_available_configs | column | expand | sed 's/^/    /'
    return 1
   fi
  done
+ 
  DEFCONFIGS_NAMES="${check_defconfigs_name# }"
  DEFCONFIGS_PATHS="${check_defconfigs_path# }"
  return 0
 }
 
 if [ -z "$DEFCONFIG" ]; then
- while true; do
-  read -p "[?] Enter defconfig (supports multiple, space-separated): " user_input
-  if [ -z "$user_input" ]; then
-   echo -e "\n[!] Defconfig is necessary when building kernel!"
-   continue
-  fi
-  if check_defconfigs "$user_input"; then
-   DEFCONFIG="$DEFCONFIGS_NAMES"
-   break
-  fi
- done
-else
- if ! check_defconfigs "$DEFCONFIG"; then exit 1; fi
- DEFCONFIG="$DEFCONFIGS_NAMES"
+ AVAILABLE_CONFIGS=$(get_available_configs)
+ [ "$(echo "$AVAILABLE_CONFIGS" | grep -c . || true)" -eq 1 ] && DEFCONFIG="$AVAILABLE_CONFIGS"
 fi
-echo "[+] Using ${DEFCONFIG} as defconfig!"
+while [ -z "$DEFCONFIG" ] || ! check_defconfigs "$DEFCONFIG"; do
+ read -p "[INFO] Enter defconfig (supports multiple, space-separated): " DEFCONFIG
+done
+DEFCONFIG="$DEFCONFIGS_NAMES"
+sed -i "s|^DEFCONFIG=.*|DEFCONFIG=\"$DEFCONFIG\"|" "${BASH_SOURCE[0]}"
+info "Using ${DEFCONFIG} as defconfig!"
 
 # ==============================================================================
 # 4. DETECT ARCHITECTURE
 # ==============================================================================
-if [[ "$DEFCONFIGS_PATHS" = *"/arch/arm64/configs/"* ]]; then
+if [[ "$DEFCONFIGS_PATHS" = *"arm64"* ]]; then
  export ARCH=arm64
  export CLANG_TRIPLE="aarch64-linux-gnu-"
- GCC64=true && GCC32=true
- echo "[+] Kernel's architecture is ARM64!"
-elif [[ "$DEFCONFIGS_PATHS" = *"/arch/arm/configs/"* ]]; then
+else
  export ARCH=arm
  export CLANG_TRIPLE="arm-linux-gnueabi-"
- GCC64=false && GCC32=true
- echo "[+] Kernel's architecture is ARM!"
+fi
+
+if [[ "$SAMSUNG_KERNEL" = true && ! -f "${KERNEL_DIR}/arch/${ARCH}/configs/samsung-rkp.config" ]]; then
+ cat <<EOF > "${KERNEL_DIR}/arch/${ARCH}/configs/samsung-rkp.config"
+CONFIG_UH=n
+CONFIG_UH_RKP=n
+CONFIG_UH_LKMAUTH=n
+CONFIG_UH_LKM_BLOCK=n
+CONFIG_RKP_CFP_JOPP=n
+CONFIG_RKP_CFP_ROPP=n
+CONFIG_RKP_CFP=n
+CONFIG_SECURITY_DEFEX=n
+CONFIG_PROCA=n
+CONFIG_FIVE=n
+EOF
+fi
+[ "$SAMSUNG_KERNEL" = true ] && DEFCONFIG+=" samsung-rkp.config"
+
+# ==============================================================================
+# 5. BUILD OPTIONS
+# ==============================================================================
+BUILD_OPTIONS=(-C "${KERNEL_DIR}" -j"$(nproc)" ARCH="${ARCH}" )
+
+if [[ "$SAMSUNG_KERNEL" = true && "${DEFCONFIG,,}" = *"exynos"* ]]; then
+ IMAGE_DIR="${KERNEL_DIR}/arch/${ARCH}/boot"
+else
+ BUILD_OPTIONS+=( O="${KERNEL_DIR}/out" )
+ IMAGE_DIR="${KERNEL_DIR}/out/arch/${ARCH}/boot"
 fi
 
 # ==============================================================================
-# 5. DOWNLOAD TOOLCHAIN
+# 6. DOWNLOAD TOOLCHAIN
 # ==============================================================================
-if [ ! -d "$CLANG_DIR" ]; then get_script "get_clang.sh"; fi
-
-# Download GCC if toolchain is required
-if [ "$VERSION" -lt "5" && ( "$GCC64" = true ] || [ "$GCC32" = true ) ]; then
- if [ ! -d "$GCC_DIR" ]; then get_script "get_gcc.sh"; fi
-fi
-
-# ==============================================================================
-# (OPTIONAL) INTEGRATE KERNELSU
-# ==============================================================================
-integrate_ksu () {
- get_script "integrate_ksu.sh"
- echo "[+] Downloading defconfig to enable KernelSU"
- if ! curl -sL "$REPO_URL/defconfig/ksu_defconfig" -o "$KSU_DEFCONFIG"; then
-  echo "[-] Error: Can not download defconfig" >&2
-  exit 1
- fi
-}
-
-integrate_ksu_susfs () {
- get_script "integrate_ksu_susfs.sh"
- echo "[+] Downloading defconfig to enable KernelSU with SUSFS"
-  if ! curl -sL "$REPO_URL/defconfig/ksu-susfs_defconfig" -o "$KSU_DEFCONFIG"; then
-   echo "[-] Error: Can not download defconfig" >&2
-   exit 1
-  fi
-}
-
-if [ -z "$KSU" ]; then
- while true; do
-  read -t 10 -p "Integrate KSU? [y/n]: " KSU || true
-  if [[ "$KSU" = "Y" || "$KSU" = "y" || "$KSU" = "N" || "$KSU" = "n" || -z "$KSU" ]]; then
-   [ -n "$KSU" ] && sed -i "s/^KSU=.*/KSU=$KSU/" "${BASH_SOURCE[0]}"
-   break
-  else
-   echo "[?] Unknown answer: ${KSU}"
-  fi
- done
-fi
-if [[ "$KSU" = "Y" || "$KSU" = "y" ]]; then
- KSU_DEFCONFIG="${KERNEL_DIR}/arch/${ARCH}/configs/custom.config"
- if [[ "$KERNEL_VERSION" = "3.18" || "$KERNEL_VERSION" = "4.4" ]]; then
-  echo "[+] Integrate KernelSU..."
-  integrate_ksu
- elif [[ "$VERSION" -eq "4" || "$KERNEL_VERSION" = "5.4" ]]; then
-  echo "[+] Integrate KernelSU with SUSFS..."
-  integrate_ksu_susfs
+get_gcc(){
+ [ ! -d "$GCC_DIR/aarch64" ] && git clone -q https://github.com/Tam97123/Google-GCC-Android -b aarch64 "$GCC_DIR/aarch64"
+ [ ! -d "$GCC_DIR/arm" ] && git clone -q https://github.com/Tam97123/Google-GCC-Android -b arm32 "$GCC_DIR/arm"
+ if [ "$ARCH" = "arm64" ]; then
+  export CROSS_COMPILE="${GCC_DIR}/aarch64/bin/aarch64-linux-android-"
+  export CROSS_COMPILE_ARM32="${GCC_DIR}/arm/bin/arm-linux-androideabi-"
+  BUILD_OPTIONS+=( CROSS_COMPILE="${CROSS_COMPILE}" CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" )
  else
-  echo "[-] This kernel script does not support kernel ${KERNEL_VERSION}!" >&2
-  exit 1
+  export CROSS_COMPILE="${GCC_DIR}/arm/bin/arm-linux-androideabi-"
+  BUILD_OPTIONS+=( CROSS_COMPILE="${CROSS_COMPILE}" )
  fi
- DEFCONFIG="${DEFCONFIG} custom.config"
-elif [[ "$KSU" = "N" || "$KSU" = "n" ]]; then
- echo "[-] Skipping integrate KernelSU!"
-elif [ -z "$KSU" ]; then
- echo -e "\n[\] Skipping integrate KernelSU!"
+}
+
+if ls "${KERNEL_DIR}"/build.config.* 1> /dev/null 2>&1 || grep -qi "clang" "${SAMSUNG_README:-}" 2>/dev/null; then
+ info "Detected AOSP kernel (Using LLVM/Clang)"
+ if [ ! -d "$CLANG_DIR" ]; then
+  CLANG_NAME="$(grep -oE 'clang-r?[0-9]+[a-z0-9]*' "${SAMSUNG_README:-}" 2>/dev/null | head -n 1 || true)"
+  [ -n "$CLANG_NAME" ] || CLANG_NAME="$(grep -hoE 'clang-r?[0-9]+[a-z0-9]*' "$KERNEL_DIR"/build.config.* 2>/dev/null | sort | uniq -c | sort -nr | awk '{print $2}' | head -n 1 || true)"
+  if [ -n "$CLANG_NAME" ]; then
+   info "Downloading ${CLANG_NAME}..."
+   git clone --filter=blob:none --no-checkout https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 aosp_clang >/dev/null 2>&1
+   cd aosp_clang
+   CLANG_TARGET=$(git log -n 1 --all --diff-filter=AM --format="%H" -- "$CLANG_NAME")
+   git sparse-checkout init --cone >/dev/null 2>&1
+   git sparse-checkout set "$CLANG_NAME" >/dev/null 2>&1
+   git checkout "$CLANG_TARGET" >/dev/null 2>&1
+   mkdir -p "${CLANG_DIR%/*}"
+   mv "$CLANG_NAME" "$CLANG_DIR"
+   cd "$KERNEL_DIR" && rm -rf aosp_clang
+  elif [ "$KERNEL_VERSION" = "5.4" ]; then
+   info "Downloading LLVM toolchain 10.0.9..."
+   mkdir -p "$CLANG_DIR"
+   curl -LSs "https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/llvm-arm-toolchain-ship-10.0.9.tar.gz" | tar -xz -C "$CLANG_DIR" --strip-components=1
+  else
+   error "Can not detect clang!"
+  fi
+ fi
+
+ export PATH="${CLANG_DIR}/bin:${PATH}"
+ export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+ [[ "$VERSION" -lt 5 || ( "$VERSION" -ge 5 && "$PATCHLEVEL" -le 10 ) ]] && get_gcc
+ BUILD_OPTIONS+=( CC="ccache ${CLANG_DIR}/bin/clang" LD="${CLANG_DIR}/bin/ld.lld" LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE="${CLANG_TRIPLE}" )
 else
- echo "[-] Error: Unknown answer: ${KSU}" >&2
- exit 1
+ info "Detected OEM kernel (Using GCC)"
+ get_gcc
+ BUILD_OPTIONS+=( CC="ccache ${CROSS_COMPILE}gcc" )
 fi
 
 # ==============================================================================
-# 6. BUILD OPTIONS
+# 7. INTEGRATE KERNELSU
 # ==============================================================================
-BUILD_OPTIONS=(
- -C "${KERNEL_DIR}"
- O="${KERNEL_DIR}/out"
- -j"$(nproc)"
- ARCH="${ARCH}"
- CC="ccache ${CLANG_DIR}/bin/clang"
- CLANG_TRIPLE="${CLANG_TRIPLE}"
-)
+while [ -z "$KSU" ]; do
+ read -t 10 -p "Integrate KSU? [y/n]: " KSU || break
+ [[ "${KSU,,}" =~ ^[yn]$ ]] && sed -i "s/^KSU=.*/KSU=$KSU/" "${BASH_SOURCE[0]}" && break
+ info "Unknown answer: ${KSU}" && KSU=
+done
 
-if [ "$VERSION" -ge "5" ]; then
- BUILD_OPTIONS+=( LD="${CLANG_DIR}/bin/ld.lld" LLVM=1 LLVM_IAS=1 )
-elif [ "$ARCH" = "arm64" ]; then
- export CROSS_COMPILE="${GCC_DIR}/aarch64/bin/aarch64-linux-android-"
- export CROSS_COMPILE_ARM32="${GCC_DIR}/arm/bin/arm-linux-androideabi-"
- BUILD_OPTIONS+=( CROSS_COMPILE="${CROSS_COMPILE}" CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" )
-else
- export CROSS_COMPILE="${GCC_DIR}/arm/bin/arm-linux-androideabi-"
- BUILD_OPTIONS+=( CROSS_COMPILE="${CROSS_COMPILE}" )
+if [ "${KSU,,}" = "y" ]; then
+ if [ ! -d "$KERNEL_DIR/KernelSU" ]; then
+  info "Integrating KernelSU..."
+  curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash >/dev/null 2>&1
+ fi
+
+ if [[ "$VERSION" -eq 4 || "$KERNEL_VERSION" = "5.4" ]]; then
+  REJECT_DIR="$KERNEL_DIR/patch_rejects"
+  
+  if [ ! -f "$KERNEL_DIR/.ksu_patch" ]; then
+   info "Integrating SUSFS..."
+   KSU_PATCH="susfs_inline_hook_patches.sh"
+   curl -sLO "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/${KSU_PATCH}"
+   bash "$KSU_PATCH" >/dev/null 2>&1 && rm -f "$KSU_PATCH"
+   
+   SUSFS_PATCH="susfs_patch_to_${KERNEL_VERSION}.patch"
+   if curl -sLfO "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/Patch/${SUSFS_PATCH}"; then
+    patch -p1 < "$SUSFS_PATCH" || true
+    rm -f "$SUSFS_PATCH"
+   fi
+   touch .ksu_patch
+  fi
+ 
+  if find "$KERNEL_DIR" -path "$REJECT_DIR" -prune -o -name "*.rej" -print | grep -q "."; then
+   info "Patches failed!"
+   mkdir -p "$REJECT_DIR"
+   find "$KERNEL_DIR" -path "$REJECT_DIR" -prune -o -type f -name "*.rej" -print | while read -r rej_file; do
+    rel_dir=$(dirname "${rej_file#$KERNEL_DIR/}")
+    mkdir -p "$REJECT_DIR/$rel_dir"
+    mv "$rej_file" "$REJECT_DIR/$rel_dir/"
+   done
+   error "Collected failed patches into $REJECT_DIR"
+  fi
+  if [ ! -f "${KERNEL_DIR}/arch/${ARCH}/configs/ksu-susfs.config" ]; then 
+   info "Appending KernelSU configurations..."
+   cat <<EOF > "${KERNEL_DIR}/arch/${ARCH}/configs/ksu-susfs.config"
+CONFIG_DEBUG_KERNEL=y
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+CONFIG_KSU=y
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_SUSFS_SUS_MAP=y
+EOF
+  fi
+  DEFCONFIG+=" ksu-susfs.config"
+ elif [ "$KERNEL_VERSION" = "3.18" ]; then
+  info "This script does not support SUSFS for kernel 3.18!"
+  if [ ! -f "${KERNEL_DIR}/arch/${ARCH}/configs/ksu.config" ]; then
+   info "Appending KernelSU configurations..."
+   cat <<EOF > "${KERNEL_DIR}/arch/${ARCH}/configs/ksu.config"
+CONFIG_DEBUG_KERNEL=y
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+EOF
+  fi
+  DEFCONFIG+=" ksu.config"
+ else
+  info "This script does not support KernelSU for kernel ${KERNEL_VERSION}. Skipping KernelSU integration!"
+  sed -i "s/^KSU=y.*/KSU=n/" "${BASH_SOURCE[0]}"
+ fi
+elif [ "${KSU,,}" = "n" ]; then
+ info "Skipping KernelSU integration!"
 fi
 
 # ==============================================================================
-# 7. BUILDING PROCESS
+# 8. BUILDING PROCESS
 # ==============================================================================
-export PATH="${CLANG_DIR}/bin:${PATH}"
-
-# Export ccache to speed up building
 export USE_CCACHE=1
 export CCACHE_EXEC=$(command -v ccache || echo "/usr/bin/ccache")
 ccache -M 50G >/dev/null
 
-echo "[+] Generating Defconfig..."
+info "Generating Defconfig..."
 make "${BUILD_OPTIONS[@]}" $DEFCONFIG
 
-echo "[+] Compiling Kernel..."
+info "Compiling Kernel..."
 [ -f "${KERNEL_DIR}/build.log" ] && rm -f build.log
 make "${BUILD_OPTIONS[@]}" 2>&1 | tee build.log
-echo "[INFO] BUILD succeed!"
+info "BUILD succeed!"
 
 # ==============================================================================
-# 9. PREPARING ANYKERNEL3
+# 9. PACKAGE ANYKERNEL3 ZIP
 # ==============================================================================
 ANYKERNEL3_DIR="${KERNEL_DIR}/AnyKernel3"
 ZIP_NAME="Kernel_${KERNEL_VERSION}_$(date +%y%m%d).zip"
-IMAGE_DIR="${KERNEL_DIR}/out/arch/${ARCH}/boot"
 
 if [ ! -d "$ANYKERNEL3_DIR" ]; then
- echo "[+] Downloading AnyKernel3..."
- if ! git clone -q https://github.com/Tam97123/AnyKernel3-NonGKI "$ANYKERNEL3_DIR"; then
-  echo "[-] Error: Can not download AnyKernel3!" >&2
-  exit 1
- fi
+ info "Downloading AnyKernel3..."
+ git clone -q --depth=1 https://github.com/osm0sis/AnyKernel3 "$ANYKERNEL3_DIR" || error "Can not download AnyKernel3!"
+ sed -i 's/do.devicecheck=1/do.devicecheck=0/; s|^block=.*|block=auto;|; s|^is_slot_device=.*|is_slot_device=auto;|' "$ANYKERNEL3_DIR/anykernel.sh"
 fi
 
-echo "[+] Copying Images..."
-if [ -f "$IMAGE_DIR/Image.gz-dtb" ]; then
- cp "${IMAGE_DIR}/Image.gz-dtb" "$ANYKERNEL3_DIR/"
-elif [ -f "$IMAGE_DIR/Image" ]; then
- cp "${IMAGE_DIR}/Image" "$ANYKERNEL3_DIR/"
-fi
-find "${KERNEL_DIR}/out" -type f -name "*.img" 2>/dev/null | while read -r img_file; do cp "$img_file" "$ANYKERNEL3_DIR/"; done
+info "Copying Kernel Image..."
+for img in Image.gz-dtb Image.lz4-dtb Image.gz Image.lz4 Image; do
+ [ -f "$IMAGE_DIR/$img" ] && cp "$IMAGE_DIR/$img" "$ANYKERNEL3_DIR/" && break
+done
+find "${KERNEL_DIR}/out" -type f -name "*.img" -exec cp {} "$ANYKERNEL3_DIR/" \; 2>/dev/null || true
 
-#if grep -qE "\.ko|Building modules|INSTALL_MOD_PATH" build.log 2>/dev/null && [ -n "$(find "${KERNEL_DIR}/out" -type f -name "*.ko" -print -quit 2>/dev/null)" ]; then
-# echo "[+] Copying modules (.ko)..."
-# MODULES_PATH="${ANYKERNEL3_DIR}/modules/system/lib/modules"
-# mkdir -p "$MODULES_PATH"
-# find "${KERNEL_DIR}/out" -type f -name "*.ko" -exec cp {} "$MODULES_PATH/" \;
-# sed -i 's/do\.modules=0/do.modules=1/' "${ANYKERNEL3_DIR}/anykernel.sh"
-#fi
-
-# ==============================================================================
-# 10. PACKAGE ANYKERNEL3 ZIP
-# ==============================================================================
 cd "$ANYKERNEL3_DIR"
 zip -r9 "${KERNEL_DIR}/${ZIP_NAME}" . -x "*.git*" > /dev/null
-rm -rf "$ANYKERNEL3_DIR"
-echo "[INFO] AnyKernel3 created at ${KERNEL_DIR}/${ZIP_NAME}"
+rm -rf $ANYKERNEL3_DIR
+info "AnyKernel3 created at ${KERNEL_DIR}/${ZIP_NAME}"
