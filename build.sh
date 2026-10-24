@@ -20,24 +20,6 @@ DEFCONFIG=
 KSU=
 
 # ==============================================================================
-# SAMSUNG kernel?
-# ==============================================================================
-if [[ -d "security/defex" || -d "security/rkp" || -d "security/proca" || -d "security/five" || -d "security/samsung" || -d "drivers/samsung" ]]; then
- SAMSUNG_KERNEL=true
- SAMSUNG_README=$(find "$KERNEL_DIR" "$KERNEL_DIR/.." -maxdepth 1 -type f -iname "README_Kernel.txt" -print -quit 2>/dev/null || true)
- info "Detected SAMSUNG kernel! Please create an Issue if it's wrong!"
- [ -z "$SAMSUNG_README" ] && error "Instruction from SAMSUNG not found! Please provide README_Kernel.txt in the kernel source or upper directory."
- if [ -z "$DEFCONFIG" ]; then
-  SAMSUNG_DEFCONFIG=$(grep -m 1 -oE '[a-zA-Z0-9_-]+_defconfig' "$SAMSUNG_README" || true)
-  [ -n "$SAMSUNG_DEFCONFIG" ] && DEFCONFIG="$SAMSUNG_DEFCONFIG"
- fi
- [ -f "build_kernel.sh" ] && source <(grep -E "^export " build_kernel.sh || true)
-else
- SAMSUNG_KERNEL=false
- info "Please create an Issue if this is SAMSUNG kernel!"
-fi
-
-# ==============================================================================
 # 1. CHECK KERNEL VERSION
 # ==============================================================================
 if [[ -z "$VERSION" || -z "$PATCHLEVEL" ]]; then
@@ -46,6 +28,21 @@ elif [[ ( "$VERSION" -eq 5 && "$PATCHLEVEL" -gt 4 ) || "$VERSION" -gt 5 ]]; then
  error "This script does not support GKI kernel ${KERNEL_VERSION}!"
 else
  info "Detected kernel ${KERNEL_VERSION}!"
+fi
+
+# ==============================================================================
+# SAMSUNG kernel?
+# ==============================================================================
+if [[ -d "security/defex" || -d "security/rkp" || -d "security/proca" || -d "security/five" || -d "security/samsung" || -d "drivers/samsung" ]]; then
+ SAMSUNG_KERNEL=true
+ SAMSUNG_README=$(find "$KERNEL_DIR" "$KERNEL_DIR/.." -maxdepth 1 -type f -iname "README_Kernel.txt" -print -quit 2>/dev/null || true)
+ info "Detected SAMSUNG kernel! Please create an Issue if it's wrong!"
+ [ -z "$SAMSUNG_README" ] && error "Instruction from SAMSUNG not found! Please provide README_Kernel.txt in the kernel source or upper directory."
+ [ -z "$DEFCONFIG" ] && DEFCONFIG=$(grep -m 1 -oE '[a-zA-Z0-9_-]+_defconfig' "$SAMSUNG_README" || true)
+ [ -f "build_kernel.sh" ] && source <(grep -E "^export " build_kernel.sh || true)
+else
+ SAMSUNG_KERNEL=false
+ info "Please create an Issue if this is SAMSUNG kernel!"
 fi
 
 # ==============================================================================
@@ -324,11 +321,11 @@ ZIP_NAME="Kernel_${KERNEL_VERSION}_$(date +%y%m%d).zip"
 if [ ! -d "$ANYKERNEL3_DIR" ]; then
  info "Downloading AnyKernel3..."
  git clone -q --depth=1 https://github.com/osm0sis/AnyKernel3 "$ANYKERNEL3_DIR" || error "Can not download AnyKernel3!"
- sed -i 's/do.devicecheck=1/do.devicecheck=0/; s|^block=.*|block=auto;|; s|^is_slot_device=.*|is_slot_device=auto;|' "$ANYKERNEL3_DIR/anykernel.sh"
+ sed -i 's/ExampleKernel by osm0sis @ xda-developers/NonGKI Kernel Build/g'; 's/do.devicecheck=1/do.devicecheck=0/g'; 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g'; 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
 fi
 
 info "Copying Kernel Image..."
-for img in Image.gz-dtb Image.lz4-dtb Image.gz Image.lz4 Image; do
+for img in Image.gz-dtb Image.lz4-dtb Image; do
  [ -f "$IMAGE_DIR/$img" ] && cp "$IMAGE_DIR/$img" "$ANYKERNEL3_DIR/" && break
 done
 find "${KERNEL_DIR}/out" -type f -name "*.img" -exec cp {} "$ANYKERNEL3_DIR/" \; 2>/dev/null || true
